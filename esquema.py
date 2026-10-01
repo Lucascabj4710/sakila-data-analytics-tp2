@@ -1,9 +1,3 @@
-"""
-Módulo de mapeo de esquema (esquema.py)
-Traduce nombres canónicos de Sakila (inglés) a los nombres reales 
-en español definidos en tu script DDL de SQL Server.
-"""
-
 TABLAS = {
     "rental": "alquiler",
     "film": "pelicula",

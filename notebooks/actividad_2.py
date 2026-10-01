@@ -4,31 +4,38 @@ import pandas as pd
 import numpy as np
 from sqlalchemy import text
 
+# Agregar la raíz del proyecto al path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from config_conexion import obtener_motor
+# IMPORTAMOS EL DICCIONARIO TRADUCTOR
+from esquema import TABLAS, COLUMNAS
 
 motor = obtener_motor()
 
-# 1. Cargar el conjunto de trabajo
-query = text("""
+# 1. Cargar el conjunto de trabajo mediante esquema.py
+query_raw = f"""
 SELECT 
-    a.id_alquiler,
-    a.fecha_alquiler,
-    a.fecha_devolucion,
-    c.id_cliente,
-    p.id_pelicula,
-    p.duracion_alquiler,
-    p.costo_reposicion,
-    p.tarifa_alquiler
-FROM alquiler a
-INNER JOIN inventario i ON a.id_inventario = i.id_inventario
-INNER JOIN pelicula p ON i.id_pelicula = p.id_pelicula
-INNER JOIN cliente c ON a.id_cliente = c.id_cliente;
-""")
+    a.{COLUMNAS['rental_id']}        AS rental_id,
+    a.{COLUMNAS['rental_date']}      AS rental_date,
+    a.{COLUMNAS['return_date']}      AS return_date,
+    c.{COLUMNAS['customer_id']}      AS customer_id,
+    p.{COLUMNAS['film_id']}          AS film_id,
+    p.{COLUMNAS['rental_duration']}  AS rental_duration,
+    p.{COLUMNAS['replacement_cost']} AS replacement_cost,
+    p.{COLUMNAS['rental_rate']}      AS rental_rate
+FROM {TABLAS['rental']} a
+INNER JOIN {TABLAS['inventory']} i 
+    ON a.{COLUMNAS['inventory_id']} = i.{COLUMNAS['inventory_id']}
+INNER JOIN {TABLAS['film']} p 
+    ON i.{COLUMNAS['film_id']} = p.{COLUMNAS['film_id']}
+INNER JOIN {TABLAS['customer']} c 
+    ON a.{COLUMNAS['customer_id']} = c.{COLUMNAS['customer_id']};
+"""
 
-df = pd.read_sql(query, motor)
-df['fecha_alquiler'] = pd.to_datetime(df['fecha_alquiler'])
-df['fecha_devolucion'] = pd.to_datetime(df['fecha_devolucion'])
+df = pd.read_sql(text(query_raw), motor)
+df['rental_date'] = pd.to_datetime(df['rental_date'])
+df['return_date'] = pd.to_datetime(df['return_date'])
 
 print("==================================================")
 print("1. FORMA Y TIPOS DE DATOS")
@@ -42,12 +49,12 @@ pct_nulos = (df.isnull().sum() / len(df)) * 100
 df_nulos = pd.DataFrame({'Nulos': nulos, 'Porcentaje (%)': pct_nulos})
 print(df_nulos[df_nulos['Nulos'] > 0])
 
-duplicados_pk = df.duplicated(subset=['id_alquiler']).sum()
-print(f"\nDuplicados por clave primaria (id_alquiler): {duplicados_pk}")
+duplicados_pk = df.duplicated(subset=['rental_id']).sum()
+print(f"\nDuplicados por clave primaria (rental_id): {duplicados_pk}")
 
 print("\n==================================================")
 print("3. CONTROL ESPECÍFICO DE VARIANTE: ALQUILERES SIN DEVOLUCIÓN")
-sin_devolucion = df[df['fecha_devolucion'].isnull()]
+sin_devolucion = df[df['return_date'].isnull()]
 total_sin_dev = len(sin_devolucion)
 pct_sin_dev = (total_sin_dev / len(df)) * 100
 
@@ -59,12 +66,12 @@ print("\n==================================================")
 print("4. REGLAS DE NEGOCIO PROPIAS")
 
 # Regla 1: Inconsistencia temporal
-viajes_tiempo = df[df['fecha_devolucion'] < df['fecha_alquiler']]
-print(f"Regla 1 (fecha_devolucion < fecha_alquiler): {len(viajes_tiempo)} filas violan la regla.")
+viajes_tiempo = df[df['return_date'] < df['rental_date']]
+print(f"Regla 1 (return_date < rental_date): {len(viajes_tiempo)} filas violan la regla.")
 
 # Regla 2: Duración real de alquiler fuera de rango razonable (> 30 días para devueltos)
-df_devueltos = df[df['fecha_devolucion'].notnull()].copy()
-df_devueltos['dias_prestamo'] = (df_devueltos['fecha_devolucion'] - df_devueltos['fecha_alquiler']).dt.total_seconds() / 86400.0
+df_devueltos = df[df['return_date'].notnull()].copy()
+df_devueltos['dias_prestamo'] = (df_devueltos['return_date'] - df_devueltos['rental_date']).dt.total_seconds() / 86400.0
 
 duracion_extrema = df_devueltos[df_devueltos['dias_prestamo'] > 30]
 print(f"Regla 2 (Devoluciones con más de 30 días de préstamo): {len(duracion_extrema)} filas violan la regla.")
@@ -86,13 +93,15 @@ print("Diagnóstico: Son casos reales de retención prolongada permitidos por el
 print("\n==================================================")
 print("6. COMPARACIÓN EN MOTOR SQL (Control Espejo)")
 
-query_espejo = text("""
+# Consulta espejo desacoplada con esquema.py
+query_espejo_raw = f"""
 SELECT 
-    COUNT(CASE WHEN fecha_devolucion IS NULL THEN 1 END) AS nulos_devolucion,
-    COUNT(CASE WHEN fecha_devolucion < fecha_alquiler THEN 1 END) AS violaciones_fechas
-FROM alquiler;
-""")
-df_espejo = pd.read_sql(query_espejo, motor)
+    COUNT(CASE WHEN {COLUMNAS['return_date']} IS NULL THEN 1 END) AS nulos_devolucion,
+    COUNT(CASE WHEN {COLUMNAS['return_date']} < {COLUMNAS['rental_date']} THEN 1 END) AS violaciones_fechas
+FROM {TABLAS['rental']};
+"""
+
+df_espejo = pd.read_sql(text(query_espejo_raw), motor)
 print("Resultados calculados en SQL Server:")
 print(f"- Nulos en devolución: {df_espejo.iloc[0]['nulos_devolucion']} (Pandas: {total_sin_dev})")
 print(f"- Violaciones temporales: {df_espejo.iloc[0]['violaciones_fechas']} (Pandas: {len(viajes_tiempo)})")

@@ -8,49 +8,64 @@ from sqlalchemy import text
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config_conexion import obtener_motor
+# IMPORTAMOS EL DICCIONARIO TRADUCTOR
+from esquema import TABLAS, COLUMNAS
 
 motor = obtener_motor()
 
-# 1. Extracción parametrizada (consigna: NUNCA usar f-strings ni concatenación de valores)
+# 1. Extracción parametrizada y desacoplada mediante esquema.py
 fecha_corte = '2005-01-01'
 
-query_extraccion = text("""
+# Construimos la consulta inyectando los nombres traducidos desde esquema.py
+# y usando alias estándar en inglés (AS rental_id, etc.) para pandas
+sql_raw = f"""
 SELECT 
-    a.id_alquiler,
-    a.fecha_alquiler,
-    a.fecha_devolucion,
-    c.id_cliente,
-    c.nombre AS nombre_cliente,
-    c.apellido AS apellido_cliente,
-    p.id_pelicula,
-    p.titulo,
-    p.duracion_alquiler,
-    p.costo_reposicion,
-    p.tarifa_alquiler,
-    cat.nombre AS categoria
-FROM alquiler a
-INNER JOIN inventario i ON a.id_inventario = i.id_inventario
-INNER JOIN pelicula p ON i.id_pelicula = p.id_pelicula
-INNER JOIN cliente c ON a.id_cliente = c.id_cliente
-LEFT JOIN pelicula_categoria pc ON p.id_pelicula = pc.id_pelicula
-LEFT JOIN categoria cat ON pc.id_categoria = cat.id_categoria
-WHERE a.fecha_alquiler >= :fecha
-ORDER BY a.fecha_alquiler ASC;
-""")
+    a.{COLUMNAS['rental_id']}        AS rental_id,
+    a.{COLUMNAS['rental_date']}      AS rental_date,
+    a.{COLUMNAS['return_date']}      AS return_date,
+    c.{COLUMNAS['customer_id']}      AS customer_id,
+    c.{COLUMNAS['first_name']}       AS first_name,
+    c.{COLUMNAS['last_name']}        AS last_name,
+    p.{COLUMNAS['film_id']}          AS film_id,
+    p.{COLUMNAS['title']}            AS title,
+    p.{COLUMNAS['rental_duration']}  AS rental_duration,
+    p.{COLUMNAS['replacement_cost']} AS replacement_cost,
+    p.{COLUMNAS['rental_rate']}      AS rental_rate,
+    cat.{COLUMNAS['name']}           AS category
+FROM {TABLAS['rental']} a
+INNER JOIN {TABLAS['inventory']} i 
+    ON a.{COLUMNAS['inventory_id']} = i.{COLUMNAS['inventory_id']}
+INNER JOIN {TABLAS['film']} p 
+    ON i.{COLUMNAS['film_id']} = p.{COLUMNAS['film_id']}
+INNER JOIN {TABLAS['customer']} c 
+    ON a.{COLUMNAS['customer_id']} = c.{COLUMNAS['customer_id']}
+LEFT JOIN {TABLAS['film_category']} pc 
+    ON p.{COLUMNAS['film_id']} = pc.{COLUMNAS['film_id']}
+LEFT JOIN {TABLAS['category']} cat 
+    ON pc.{COLUMNAS['category_id']} = cat.{COLUMNAS['category_id']}
+WHERE a.{COLUMNAS['rental_date']} >= :fecha
+ORDER BY a.{COLUMNAS['rental_date']} ASC;
+"""
+
+query_extraccion = text(sql_raw)
 
 print("Cargando datos con pandas.read_sql parametrizado...")
+# El valor del filtro viaja como parámetro seguro (params)
 df_alquileres = pd.read_sql(query_extraccion, motor, params={"fecha": fecha_corte})
 print(f"Filas recuperadas: {len(df_alquileres)}")
 
+
 # 2. Comparación de Métrica: Promedio de costo de reposición
-# Enfoque A: 100% en SQL Server
+# Enfoque A: 100% en SQL Server (también desacoplado)
 t0_sql = time.perf_counter()
-query_metrica_sql = text("""
-SELECT AVG(CAST(p.costo_reposicion AS FLOAT)) AS promedio_costo
-FROM alquiler a
-INNER JOIN inventario i ON a.id_inventario = i.id_inventario
-INNER JOIN pelicula p ON i.id_pelicula = p.id_pelicula
-WHERE a.fecha_alquiler >= :fecha
+query_metrica_sql = text(f"""
+SELECT AVG(CAST(p.{COLUMNAS['replacement_cost']} AS FLOAT)) AS promedio_costo
+FROM {TABLAS['rental']} a
+INNER JOIN {TABLAS['inventory']} i 
+    ON a.{COLUMNAS['inventory_id']} = i.{COLUMNAS['inventory_id']}
+INNER JOIN {TABLAS['film']} p 
+    ON i.{COLUMNAS['film_id']} = p.{COLUMNAS['film_id']}
+WHERE a.{COLUMNAS['rental_date']} >= :fecha
 """)
 df_res_sql = pd.read_sql(query_metrica_sql, motor, params={"fecha": fecha_corte})
 t1_sql = time.perf_counter()
@@ -58,8 +73,9 @@ tiempo_sql = t1_sql - t0_sql
 promedio_sql = df_res_sql.iloc[0, 0]
 
 # Enfoque B: 100% en Pandas sobre el DataFrame cargado
+# Notá que acá usamos 'replacement_cost' (el nombre canónico en inglés)
 t0_pd = time.perf_counter()
-promedio_pandas = df_alquileres['costo_reposicion'].astype(float).mean()
+promedio_pandas = df_alquileres['replacement_cost'].astype(float).mean()
 t1_pd = time.perf_counter()
 tiempo_pandas = t1_pd - t0_pd
 
